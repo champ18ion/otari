@@ -48,7 +48,11 @@ def _check_login_rate_limit(request: Request) -> None:
     """Throttle repeated failed sign-in attempts per client IP.
 
     Only called on a *failed* verification, so a correct master key is never
-    throttled. Separate limiter from the general per-user ``rate_limit_rpm``
+    throttled, even from an IP that has already used up its failure quota:
+    the issue this implements explicitly requires that a legitimate operator
+    is never locked out. That requirement is why this can't run *before*
+    verification (see the note on create_session for why that was tried and
+    reverted). Separate limiter from the general per-user ``rate_limit_rpm``
     (that one is keyed to authenticated users and never sees this pre-auth
     path). Raises 429 with Retry-After via RateLimiter.check when the calling
     IP is already over the configured limit.
@@ -82,7 +86,18 @@ async def create_session(
     db: Annotated[AsyncSession, Depends(get_db)],
     config: Annotated[GatewayConfig, Depends(get_config)],
 ) -> SessionResponse:
-    """Verify the master key and set the HttpOnly session cookie."""
+    """Verify the master key and set the HttpOnly session cookie.
+
+    The rate-limit check deliberately runs only after a failed verification,
+    not before it: a pre-verification gate can't know whether *this* attempt
+    would have succeeded, so once an IP has used up its failure quota it
+    would end up blocking that IP's legitimate owner too, not just further
+    attackers. The issue this implements explicitly rules that out. The
+    DB/hash lookup this exposes to repeated attempts only runs when no fixed
+    master_key is configured (the auto-generated bootstrap-key path); with a
+    configured master_key, verification is a constant-time string compare,
+    not a DB round trip.
+    """
     if not await is_valid_master_key(body.master_key, config, db):
         record_auth_failure("invalid_key")
         _check_login_rate_limit(request)
