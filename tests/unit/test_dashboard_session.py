@@ -233,3 +233,41 @@ def test_rotation_revokes_other_sessions_and_reminting_keeps_the_caller_signed_i
         for stale in (other_tab_session, rotating_session):
             client.cookies.set(SESSION_COOKIE_NAME, stale)
             assert client.get("/v1/settings").status_code == 401
+
+
+def _rate_limited_config(tmp_path: Path, *, limit: int | None) -> GatewayConfig:
+    return GatewayConfig(
+        database_url=f"sqlite:///{tmp_path / 'session-rate-limit-test.db'}",
+        master_key=MASTER_KEY,
+        require_pricing=False,
+        dashboard_login_rate_limit_per_minute=limit,
+    )
+
+
+def test_repeated_failed_sign_ins_get_throttled(tmp_path: Path) -> None:
+    with TestClient(create_app(_rate_limited_config(tmp_path, limit=2))) as client:
+        # First two failures are real 401s (attempt count is still under the cap).
+        for _ in range(2):
+            response = client.post("/v1/auth/session", json={"master_key": "wrong"})
+            assert response.status_code == 401
+
+        # The third failed attempt within the window is throttled, not a 401.
+        throttled = client.post("/v1/auth/session", json={"master_key": "wrong"})
+        assert throttled.status_code == 429
+        assert "Retry-After" in throttled.headers
+
+
+def test_successful_sign_in_is_never_throttled(tmp_path: Path) -> None:
+    with TestClient(create_app(_rate_limited_config(tmp_path, limit=2))) as client:
+        # Exhaust the limit with failures...
+        for _ in range(2):
+            assert client.post("/v1/auth/session", json={"master_key": "wrong"}).status_code == 401
+        # ...then the real key still gets in: only failures count against the cap.
+        assert client.post("/v1/auth/session", json={"master_key": MASTER_KEY}).status_code == 200
+
+
+def test_login_rate_limit_disabled_by_config(tmp_path: Path) -> None:
+    with TestClient(create_app(_rate_limited_config(tmp_path, limit=None))) as client:
+        # Many failures in a row, none throttled: the limiter is off entirely.
+        for _ in range(5):
+            assert client.post("/v1/auth/session", json={"master_key": "wrong"}).status_code == 401

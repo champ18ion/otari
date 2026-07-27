@@ -19,6 +19,7 @@ from gateway.api.deps import get_config, get_db, is_valid_master_key
 from gateway.core.config import GatewayConfig
 from gateway.log_config import logger
 from gateway.metrics import record_auth_failure
+from gateway.rate_limit import RateLimiter
 from gateway.services.dashboard_session_service import (
     SESSION_COOKIE_NAME,
     apply_session_cookie,
@@ -43,6 +44,36 @@ class SessionResponse(BaseModel):
     expires_at: datetime = Field(description="When the session cookie stops being accepted.")
 
 
+def _check_login_rate_limit(request: Request) -> None:
+    """Throttle repeated failed sign-in attempts per client IP.
+
+    Only called on a *failed* verification, so a correct master key is never
+    throttled. Separate limiter from the general per-user ``rate_limit_rpm``
+    (that one is keyed to authenticated users and never sees this pre-auth
+    path). Raises 429 with Retry-After via RateLimiter.check when the calling
+    IP is already over the configured limit.
+
+    Client IP comes from ``request.client.host``, not a hand-parsed
+    X-Forwarded-For: uvicorn's ProxyHeadersMiddleware already rewrites it from
+    that header, but only when the immediate peer is in ``forwarded_allow_ips``
+    (loopback by default, the same trust boundary ``request_is_https`` relies
+    on for X-Forwarded-Proto). Parsing the header directly here, instead of
+    through that trust boundary, would let anyone bypass the throttle by
+    sending their own X-Forwarded-For.
+    """
+    login_rate_limiter: RateLimiter | None = getattr(request.app.state, "login_rate_limiter", None)
+    if login_rate_limiter is None:
+        return
+    client_ip = request.client.host if request.client else None
+    if client_ip is None:
+        return
+    try:
+        login_rate_limiter.check(client_ip)
+    except HTTPException:
+        logger.warning("Dashboard sign-in rate limit exceeded for %s", client_ip)
+        raise
+
+
 @router.post("")
 async def create_session(
     body: CreateSessionRequest,
@@ -54,6 +85,7 @@ async def create_session(
     """Verify the master key and set the HttpOnly session cookie."""
     if not await is_valid_master_key(body.master_key, config, db):
         record_auth_failure("invalid_key")
+        _check_login_rate_limit(request)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid master key")
     try:
         token, expires_at = await create_dashboard_session(db, config.dashboard_session_ttl_hours)
