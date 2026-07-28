@@ -11,9 +11,10 @@ expected to speak a SearXNG-compatible JSON API:
 The default deployment points this at a bundled SearXNG container (see
 ``docker-compose.yml``, ``web-search`` profile). Any other container
 that exposes the same JSON shape on ``/search`` is a drop-in
-replacement — including commercial-API-fronting adapters whose response
+replacement, including commercial-API-fronting adapters whose response
 sets the optional ``extracted_content`` field to bypass the
-gateway-side trafilatura step.
+gateway-side trafilatura step, or the optional ``published_date`` field
+(e.g. the Brave adapter) to surface a result's recency to the model.
 
 After search, the backend optionally fetches the top results' URLs and
 runs trafilatura in-process to produce LLM-ready Markdown. Fetch +
@@ -77,10 +78,10 @@ _FETCH_MAX_REDIRECTS = 5
 # /search?format=json shape.
 _DEFAULT_ENGINES = ("duckduckgo", "mojeek", "qwant", "wikipedia")
 _CONTENT_TRUNCATE_CHARS = 1500
-# published_date is backend-controlled, untrusted input (e.g. whatever a
-# search-API-fronting adapter forwards from the provider); bound it before it
-# reaches model context so a malicious/compromised backend can't inject
-# newlines or an oversized string through this field.
+# published_date is backend-controlled (whatever a search-API-fronting
+# adapter forwards from the provider); bound it as basic rendering hygiene, a
+# single overlong or multiline value here shouldn't be the thing that makes
+# the result block hard to read.
 _PUBLISHED_DATE_MAX_CHARS = 128
 
 _DEFAULT_PURPOSE_HINT = (
@@ -432,9 +433,11 @@ def _format_results_for_model(query: str, results: list[dict[str, Any]]) -> str:
         # Brave adapter's provider_options time_range support) set this. The
         # model can't judge how current a result is from the snippet alone,
         # so surface it when present instead of silently dropping it.
-        # Untrusted backend-controlled input: collapse to one line and cap
-        # the length so a malicious/compromised backend can't use this field
-        # to inject newlines or an oversized string into model context.
+        # Collapsed to one line and length-capped as rendering hygiene, not a
+        # security boundary: title/content above aren't normalized the same
+        # way, so this alone doesn't stop a compromised backend from
+        # injecting newlines into the block; it just keeps this one new field
+        # from being the messiest part of it.
         published_date = " ".join(str(r.get("published_date") or "").split())[:_PUBLISHED_DATE_MAX_CHARS]
         header = f"[{i}] {title}" + (f" ({published_date})" if published_date else "")
         parts.append(f"{header}\n{url}\n{body}".rstrip())

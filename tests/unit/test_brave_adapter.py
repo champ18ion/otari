@@ -7,25 +7,20 @@ suite needs no network access or live key.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-
-_ADAPTER_PATH = Path(__file__).resolve().parents[2] / "scripts" / "web-search-brave-adapter" / "app.py"
+from _search_adapter_test_support import load_adapter, mock_async_client
 
 
 def _load_adapter(monkeypatch: pytest.MonkeyPatch, *, api_key: str = "brv-test") -> Any:
-    monkeypatch.setenv("BRAVE_API_KEY", api_key)
-    spec = importlib.util.spec_from_file_location("brave_adapter_app", _ADAPTER_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["brave_adapter_app"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_adapter(
+        monkeypatch,
+        adapter_dir="web-search-brave-adapter",
+        module_name="brave_adapter_app",
+        env={"BRAVE_API_KEY": api_key},
+    )
 
 
 @pytest.mark.asyncio
@@ -34,6 +29,9 @@ async def test_health_reports_missing_key(monkeypatch: pytest.MonkeyPatch) -> No
     transport = httpx.ASGITransport(app=module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
         resp = await client.get("/health")
+    # Fail closed: an orchestrator health check must not treat a keyless,
+    # unusable adapter as healthy.
+    assert resp.status_code == 503
     assert resp.json() == {"status": "missing BRAVE_API_KEY"}
 
 
@@ -43,6 +41,7 @@ async def test_health_healthy_with_key(monkeypatch: pytest.MonkeyPatch) -> None:
     transport = httpx.ASGITransport(app=module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
         resp = await client.get("/health")
+    assert resp.status_code == 200
     assert resp.json() == {"status": "healthy"}
 
 
@@ -80,7 +79,7 @@ async def test_search_maps_brave_shape(monkeypatch: pytest.MonkeyPatch) -> None:
             },
         )
 
-    monkeypatch.setattr(module.httpx, "AsyncClient", _mock_async_client(handler))
+    monkeypatch.setattr(module.httpx, "AsyncClient", mock_async_client(handler))
 
     transport = httpx.ASGITransport(app=module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
@@ -114,7 +113,7 @@ async def test_search_forwards_time_range_as_freshness(monkeypatch: pytest.Monke
         captured["params"] = dict(request.url.params)
         return httpx.Response(200, json={"web": {"results": []}})
 
-    monkeypatch.setattr(module.httpx, "AsyncClient", _mock_async_client(handler))
+    monkeypatch.setattr(module.httpx, "AsyncClient", mock_async_client(handler))
 
     transport = httpx.ASGITransport(app=module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
@@ -150,7 +149,7 @@ async def test_search_surfaces_brave_status_as_502(monkeypatch: pytest.MonkeyPat
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"error": "bad key"})
 
-    monkeypatch.setattr(module.httpx, "AsyncClient", _mock_async_client(handler))
+    monkeypatch.setattr(module.httpx, "AsyncClient", mock_async_client(handler))
 
     transport = httpx.ASGITransport(app=module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
@@ -161,30 +160,77 @@ async def test_search_surfaces_brave_status_as_502(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_search_invalid_json_returns_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_adapter(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not json</html>", headers={"content-type": "application/json"})
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", mock_async_client(handler))
+
+    transport = httpx.ASGITransport(app=module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
+        resp = await client.get("/search", params={"q": "x"})
+
+    assert resp.status_code == 502
+    assert "invalid JSON" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_search_non_dict_payload_returns_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_adapter(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["not", "a", "dict"])
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", mock_async_client(handler))
+
+    transport = httpx.ASGITransport(app=module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
+        resp = await client.get("/search", params={"q": "x"})
+
+    assert resp.status_code == 502
+    assert "unexpected shape" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_search_non_list_results_returns_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_adapter(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"web": {"results": "not-a-list"}})
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", mock_async_client(handler))
+
+    transport = httpx.ASGITransport(app=module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
+        resp = await client.get("/search", params={"q": "x"})
+
+    assert resp.status_code == 502
+    assert "unexpected shape" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_search_missing_web_key_returns_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_adapter(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", mock_async_client(handler))
+
+    transport = httpx.ASGITransport(app=module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
+        resp = await client.get("/search", params={"q": "x"})
+
+    assert resp.status_code == 502
+    assert "unexpected shape" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
 async def test_search_503_when_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_adapter(monkeypatch, api_key="")
     transport = httpx.ASGITransport(app=module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://adapter") as client:
         resp = await client.get("/search", params={"q": "x"})
     assert resp.status_code == 503
-
-
-# ----- helpers -----
-
-
-def _mock_async_client(handler: Any) -> Any:
-    """Return an httpx.AsyncClient subclass whose outbound calls use a mock
-    transport, so the adapter's GET to Brave is intercepted."""
-
-    real_async_client = httpx.AsyncClient
-
-    class _MockAsyncClient(real_async_client):  # type: ignore[valid-type, misc]
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            # The test drives the ASGI app through its own AsyncClient with an
-            # explicit transport; leave that one untouched. Only the adapter's
-            # own outbound call (which passes no transport) gets the mock.
-            if "transport" not in kwargs:
-                kwargs["transport"] = httpx.MockTransport(handler)
-            super().__init__(*args, **kwargs)
-
-    return _MockAsyncClient

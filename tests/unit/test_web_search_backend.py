@@ -144,9 +144,8 @@ async def test_published_date_is_rendered_when_backend_supplies_it(monkeypatch: 
 
 @pytest.mark.asyncio
 async def test_published_date_is_bounded_and_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
-    """published_date is backend-controlled, untrusted input: a malicious or
-    compromised backend must not be able to use it to inject newlines or an
-    oversized string into the model-facing result.
+    """A multiline or oversized published_date shouldn't make the rendered
+    result block hard to read; collapse to one line and cap the length.
     """
     body = {
         "results": [
@@ -173,8 +172,8 @@ async def test_published_date_is_bounded_and_normalized(monkeypatch: pytest.Monk
     assert "line one line two line three" in result
     assert "line one\nline two" not in result
     # Oversized input is capped, not reproduced in full.
-    assert "x" * 500 not in result
-    assert "x" * 128 in result
+    assert f"[2] Post B ({'x' * 128})" in result
+    assert f"[2] Post B ({'x' * 129})" not in result
 
 
 @pytest.mark.asyncio
