@@ -143,6 +143,41 @@ async def test_published_date_is_rendered_when_backend_supplies_it(monkeypatch: 
 
 
 @pytest.mark.asyncio
+async def test_published_date_is_bounded_and_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """published_date is backend-controlled, untrusted input: a malicious or
+    compromised backend must not be able to use it to inject newlines or an
+    oversized string into the model-facing result.
+    """
+    body = {
+        "results": [
+            {
+                "url": "https://example.com/a",
+                "title": "Post A",
+                "content": "snippet a",
+                "published_date": "line one\nline two\r\nline three",
+            },
+            {
+                "url": "https://example.org/b",
+                "title": "Post B",
+                "content": "snippet b",
+                "published_date": "x" * 500,
+            },
+        ]
+    }
+    _patched_async_client({("searxng", "/search"): httpx.Response(200, json=body)}, monkeypatch)
+
+    async with WebSearchBackend(base_url="http://searxng:8080", extract_content=False) as backend:
+        result = await backend.call_tool(WEB_SEARCH_TOOL_NAME, {"query": "claude code"})
+
+    # Multiline input collapses to one line, no injected newlines survive it.
+    assert "line one line two line three" in result
+    assert "line one\nline two" not in result
+    # Oversized input is capped, not reproduced in full.
+    assert "x" * 500 not in result
+    assert "x" * 128 in result
+
+
+@pytest.mark.asyncio
 async def test_call_tool_extracts_content_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     _patched_async_client(
         {

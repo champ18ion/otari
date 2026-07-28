@@ -6,9 +6,9 @@ bundled SearXNG metasearch (whose free engines rate-limit/CAPTCHA automated
 queries by IP).
 
 It exposes `GET /search?q=…&format=json` returning
-`{"results": [{"url", "title", "content", "published_date"?}]}` — the exact
+`{"results": [{"url", "title", "content", "published_date"?}]}`, the exact
 shape `WebSearchBackend` expects, plus an optional publish/last-updated date
-when Brave supplies one — and translates that to/from Brave's API. The Brave
+when Brave supplies one, and translates that to/from Brave's API. The Brave
 key lives in this service, never in the gateway.
 
 ## Provider options

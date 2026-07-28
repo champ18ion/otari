@@ -174,7 +174,7 @@ async def test_search_503_when_key_missing(monkeypatch: pytest.MonkeyPatch) -> N
 
 def _mock_async_client(handler: Any) -> Any:
     """Return an httpx.AsyncClient subclass whose outbound calls use a mock
-    transport — so the adapter's GET to Brave is intercepted."""
+    transport, so the adapter's GET to Brave is intercepted."""
 
     real_async_client = httpx.AsyncClient
 

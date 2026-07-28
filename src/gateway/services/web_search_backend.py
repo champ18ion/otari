@@ -77,6 +77,11 @@ _FETCH_MAX_REDIRECTS = 5
 # /search?format=json shape.
 _DEFAULT_ENGINES = ("duckduckgo", "mojeek", "qwant", "wikipedia")
 _CONTENT_TRUNCATE_CHARS = 1500
+# published_date is backend-controlled, untrusted input (e.g. whatever a
+# search-API-fronting adapter forwards from the provider); bound it before it
+# reaches model context so a malicious/compromised backend can't inject
+# newlines or an oversized string through this field.
+_PUBLISHED_DATE_MAX_CHARS = 128
 
 _DEFAULT_PURPOSE_HINT = (
     "Prefer `web_search` for current information, news, recent events, "
@@ -427,7 +432,10 @@ def _format_results_for_model(query: str, results: list[dict[str, Any]]) -> str:
         # Brave adapter's provider_options time_range support) set this. The
         # model can't judge how current a result is from the snippet alone,
         # so surface it when present instead of silently dropping it.
-        published_date = str(r.get("published_date") or "").strip()
+        # Untrusted backend-controlled input: collapse to one line and cap
+        # the length so a malicious/compromised backend can't use this field
+        # to inject newlines or an oversized string into model context.
+        published_date = " ".join(str(r.get("published_date") or "").split())[:_PUBLISHED_DATE_MAX_CHARS]
         header = f"[{i}] {title}" + (f" ({published_date})" if published_date else "")
         parts.append(f"{header}\n{url}\n{body}".rstrip())
     return "\n\n".join(parts)
