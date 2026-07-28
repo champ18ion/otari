@@ -112,6 +112,37 @@ async def test_call_tool_returns_formatted_results_without_extraction(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_published_date_is_rendered_when_backend_supplies_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A recency-aware adapter (e.g. Brave with time_range) may set
+    # published_date; a plain SearXNG backend never does. Both must render
+    # correctly: present inline next to the title, absent means no residue.
+    body = {
+        "results": [
+            {
+                "url": "https://example.com/post-a",
+                "title": "Post A",
+                "content": "snippet about A",
+                "published_date": "2026-07-20T00:00:00.000Z",
+            },
+            {
+                "url": "https://example.org/post-b",
+                "title": "Post B",
+                "content": "snippet about B",
+            },
+        ]
+    }
+    _patched_async_client({("searxng", "/search"): httpx.Response(200, json=body)}, monkeypatch)
+
+    async with WebSearchBackend(base_url="http://searxng:8080", extract_content=False) as backend:
+        result = await backend.call_tool(WEB_SEARCH_TOOL_NAME, {"query": "claude code"})
+
+    assert "[1] Post A (2026-07-20T00:00:00.000Z)" in result
+    # No published_date supplied for B: no stray parens/empty date rendered.
+    assert "[2] Post B" in result
+    assert "[2] Post B (" not in result
+
+
+@pytest.mark.asyncio
 async def test_call_tool_extracts_content_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     _patched_async_client(
         {

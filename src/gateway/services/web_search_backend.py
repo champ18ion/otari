@@ -423,5 +423,11 @@ def _format_results_for_model(query: str, results: list[dict[str, Any]]) -> str:
         body = extracted or snippet
         if len(body) > _CONTENT_TRUNCATE_CHARS:
             body = body[:_CONTENT_TRUNCATE_CHARS].rstrip() + "…"
-        parts.append(f"[{i}] {title}\n{url}\n{body}".rstrip())
+        # Optional: only backends that supply a recency signal (e.g. the
+        # Brave adapter's provider_options time_range support) set this. The
+        # model can't judge how current a result is from the snippet alone,
+        # so surface it when present instead of silently dropping it.
+        published_date = str(r.get("published_date") or "").strip()
+        header = f"[{i}] {title}" + (f" ({published_date})" if published_date else "")
+        parts.append(f"{header}\n{url}\n{body}".rstrip())
     return "\n\n".join(parts)

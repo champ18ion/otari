@@ -6,9 +6,20 @@ bundled SearXNG metasearch (whose free engines rate-limit/CAPTCHA automated
 queries by IP).
 
 It exposes `GET /search?q=…&format=json` returning
-`{"results": [{"url", "title", "content"}]}` — the exact shape
-`WebSearchBackend` expects — and translates that to/from Brave's API. The Brave
+`{"results": [{"url", "title", "content", "published_date"?}]}` — the exact
+shape `WebSearchBackend` expects, plus an optional publish/last-updated date
+when Brave supplies one — and translates that to/from Brave's API. The Brave
 key lives in this service, never in the gateway.
+
+## Provider options
+
+The gateway forwards provider-specific knobs (set via `provider_options` on the
+`otari_web_search` tool entry, or as workspace defaults in hybrid mode) as
+extra query params. This adapter recognizes one, mapped onto Brave's
+`freshness` filter; anything else is ignored:
+
+- `time_range` (`day` | `week` | `month` | `year`, or the single-letter forms
+  `d` | `w` | `m` | `y`)
 
 ## Run it via docker-compose
 

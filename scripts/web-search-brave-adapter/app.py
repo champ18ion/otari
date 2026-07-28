@@ -14,6 +14,11 @@ Each result's ``content`` is Brave's snippet; ``extracted_content`` is left
 unset so the gateway still fetches and extracts the full page (matching the
 SearXNG path). Set ``extracted_content`` here instead if you want snippet-only
 behaviour and to skip the gateway's per-URL fetch.
+
+The gateway may forward provider-specific knobs as extra query params
+(``provider_options`` on the ``otari_web_search`` tool entry). This adapter
+only recognizes ``time_range``, mapped onto Brave's ``freshness`` filter;
+anything else is ignored, never forwarded to Brave.
 """
 
 from __future__ import annotations
@@ -30,6 +35,19 @@ BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 # Brave caps `count` at 20; the gateway slices to its own max_results anyway.
 DEFAULT_COUNT = 10
 
+# Same time_range vocabulary as the Tavily adapter (single vs. plural forms
+# both accepted), mapped onto Brave's `freshness` filter values.
+_FRESHNESS_BY_TIME_RANGE = {
+    "d": "pd",
+    "day": "pd",
+    "w": "pw",
+    "week": "pw",
+    "m": "pm",
+    "month": "pm",
+    "y": "py",
+    "year": "py",
+}
+
 app = FastAPI(title="otari web-search Brave adapter")
 
 
@@ -40,13 +58,18 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/search")
-async def search(q: str = Query(..., min_length=1)) -> JSONResponse:
+async def search(
+    q: str = Query(..., min_length=1),
+    time_range: str | None = Query(default=None, pattern="^(day|week|month|year|d|w|m|y)$"),
+) -> JSONResponse:
     """Translate a SearXNG-style query into a Brave Search API call."""
     if not BRAVE_API_KEY:
         return JSONResponse(status_code=503, content={"error": "BRAVE_API_KEY is not set"})
 
     headers = {"X-Subscription-Token": BRAVE_API_KEY, "Accept": "application/json"}
     params: dict[str, str | int] = {"q": q, "count": DEFAULT_COUNT}
+    if time_range is not None:
+        params["freshness"] = _FRESHNESS_BY_TIME_RANGE[time_range]
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(BRAVE_ENDPOINT, params=params, headers=headers)
@@ -63,13 +86,21 @@ async def search(q: str = Query(..., min_length=1)) -> JSONResponse:
         return JSONResponse(status_code=502, content={"error": f"brave search failed: {exc}"})
 
     hits = (payload.get("web") or {}).get("results") or []
-    results: list[dict[str, Any]] = [
-        {
+    results: list[dict[str, Any]] = []
+    for h in hits:
+        if not isinstance(h, dict) or not h.get("url"):
+            continue
+        result: dict[str, Any] = {
             "url": h["url"],
             "title": h.get("title", ""),
             "content": h.get("description", ""),
         }
-        for h in hits
-        if isinstance(h, dict) and h.get("url")
-    ]
+        # Brave documents both `page_age` and `age` on a result with no
+        # documented distinction between them; prefer page_age (appears to be
+        # the more specific field) and fall back to age. Passed through as an
+        # opaque string, whatever format Brave sent, not reformatted here.
+        published_date = h.get("page_age") or h.get("age")
+        if published_date:
+            result["published_date"] = published_date
+        results.append(result)
     return JSONResponse(content={"results": results})
