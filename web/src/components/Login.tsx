@@ -6,14 +6,17 @@ import { useAuth } from "@/auth/AuthContext";
 import { ErrorBanner } from "@/components/ui";
 
 export function Login() {
-  const { login } = useAuth();
+  const { login, isSigningOut } = useAuth();
   const [value, setValue] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const submit = async () => {
     const trimmed = value.trim();
-    if (!trimmed || isSubmitting) {
+    // isSigningOut blocks a new sign-in until a prior sign-out's server-side
+    // revocation has finished (or timed out): otherwise its expiring cookie
+    // could land after this one mints a fresh session and clobber it (#557).
+    if (!trimmed || isSubmitting || isSigningOut) {
       return;
     }
     setIsSubmitting(true);
@@ -79,8 +82,8 @@ export function Login() {
               </p>
             </details>
             <ErrorBanner error={error} />
-            <Button type="submit" variant="primary" fullWidth isDisabled={!value.trim() || isSubmitting}>
-              {isSubmitting ? "Signing in…" : "Sign in"}
+            <Button type="submit" variant="primary" fullWidth isDisabled={!value.trim() || isSubmitting || isSigningOut}>
+              {isSigningOut ? "Finishing sign-out…" : isSubmitting ? "Signing in…" : "Sign in"}
             </Button>
           </form>
 

@@ -6,13 +6,13 @@ import { useAuth } from "@/auth/AuthContext";
 import { Provider } from "@/provider";
 
 function Harness() {
-  const { isAuthenticated, logout } = useAuth();
+  const { isAuthenticated, isSigningOut, logout } = useAuth();
   return isAuthenticated ? (
     <button type="button" onClick={logout}>
       Sign out
     </button>
   ) : (
-    <div>SIGNED OUT</div>
+    <div>{isSigningOut ? "SIGNED OUT (revocation pending)" : "SIGNED OUT"}</div>
   );
 }
 
@@ -64,6 +64,33 @@ describe("AuthProvider", () => {
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([url]) => url === "/v1/auth/session");
       expect(call?.[1]?.method).toBe("DELETE");
+    });
+  });
+
+  it("marks isSigningOut while the revocation is in flight, and clears it once resolved", async () => {
+    window.localStorage.setItem("otari.dashboard.hasSession", "1");
+    let resolveDelete!: () => void;
+    const deletePending = new Promise<Response>((resolve) => {
+      resolveDelete = () => resolve(new Response(null, { status: 204 }));
+    });
+    vi.spyOn(globalThis, "fetch").mockReturnValue(deletePending);
+    const user = userEvent.setup();
+
+    render(
+      <Provider>
+        <Harness />
+      </Provider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+
+    // Local sign-out is synchronous and unconditional...
+    expect(screen.getByText("SIGNED OUT (revocation pending)")).toBeInTheDocument();
+
+    // ...but isSigningOut only clears once the DELETE actually resolves.
+    resolveDelete();
+    await waitFor(() => {
+      expect(screen.getByText("SIGNED OUT")).toBeInTheDocument();
     });
   });
 });

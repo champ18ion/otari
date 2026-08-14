@@ -49,8 +49,12 @@ export async function createSession(key: string): Promise<boolean> {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify({ master_key: key }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-  } catch {
+  } catch (error) {
+    if (isTimeout(error)) {
+      throw new ApiError(0, TIMEOUT_MESSAGE);
+    }
     throw new ApiError(0, "Network error: could not reach the gateway.");
   }
   if (response.status === 401 || response.status === 403) {
@@ -65,9 +69,12 @@ export async function createSession(key: string): Promise<boolean> {
 // Best-effort server-side sign-out: revokes the cookie's session and expires
 // the cookie. Uses raw fetch (not apiFetch) and swallows failures so the
 // 401-bounce path can call it without re-entering the unauthorized handler.
+// Bounded like every other management call: an unbounded sign-out could
+// otherwise stay in flight past a subsequent sign-in and clobber its fresh
+// cookie with this call's expiring one (see #557).
 export async function deleteSession(): Promise<void> {
   try {
-    await fetch("/v1/auth/session", { method: "DELETE" });
+    await fetch("/v1/auth/session", { method: "DELETE", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   } catch {
     // Signing out locally still proceeds; the session expires on its TTL.
   }
