@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { deleteSession, setUnauthorizedHandler } from "@/api/client";
@@ -38,6 +38,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const [isAuthenticated, setAuthenticated] = useState<boolean>(readStoredMarker);
   const [isSigningOut, setSigningOut] = useState(false);
+  // logout() can fire more than once concurrently: a manual sign-out and a
+  // stray 401-triggered auto-logout (unauthorizedHandler) can both land
+  // close together, each starting its own deleteSession(). Counting the
+  // in-flight revocations, rather than a single finally() clearing the flag
+  // unconditionally, means isSigningOut only drops once every pending one has
+  // settled - not just whichever happens to resolve first.
+  const pendingSignOutsRef = useRef(0);
 
   const logout = useCallback(() => {
     // Local sign-out is unconditional and synchronous, exactly as before:
@@ -54,9 +61,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     // Best-effort server-side revocation, now bounded (see client.ts) and
     // tracked: isSigningOut gates the sign-in form so a new session cannot
-    // be minted while this DELETE might still land and clear its cookie.
+    // be minted while any revocation might still land and clear its cookie.
+    pendingSignOutsRef.current += 1;
     setSigningOut(true);
-    void deleteSession().finally(() => setSigningOut(false));
+    void deleteSession().finally(() => {
+      pendingSignOutsRef.current -= 1;
+      if (pendingSignOutsRef.current === 0) {
+        setSigningOut(false);
+      }
+    });
   }, [queryClient]);
 
   // Called after POST /v1/auth/session succeeded, i.e. the browser already

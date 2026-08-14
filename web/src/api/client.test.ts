@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, apiFetch } from "./client";
+import { ApiError, apiFetch, createSession, deleteSession } from "./client";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -83,5 +83,51 @@ describe("apiFetch", () => {
     await expect(apiFetch("/v1/models")).rejects.toMatchObject({
       message: expect.stringContaining("could not reach the gateway"),
     });
+  });
+});
+
+describe("createSession", () => {
+  it("bounds the request the same way apiFetch does", async () => {
+    const seen: (AbortSignal | null | undefined)[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      seen.push(init?.signal);
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    await createSession("test-key");
+
+    expect(seen[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it("maps a timeout to the same bounded-request message apiFetch uses", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("timed out", "TimeoutError"));
+
+    await expect(createSession("test-key")).rejects.toMatchObject({
+      status: 0,
+      message: expect.stringContaining("did not respond within 30s"),
+    });
+  });
+});
+
+describe("deleteSession", () => {
+  it("bounds the request the same way apiFetch does", async () => {
+    const seen: (AbortSignal | null | undefined)[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      seen.push(init?.signal);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+
+    await deleteSession();
+
+    expect(seen[0]).toBeInstanceOf(AbortSignal);
+  });
+
+  it("still resolves, rather than throwing, when the request times out", async () => {
+    // deleteSession is best-effort and swallows failures: AuthContext.logout
+    // relies on this promise always settling, timeout or not, to clear
+    // isSigningOut and unblock a subsequent sign-in (see #557).
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("timed out", "TimeoutError"));
+
+    await expect(deleteSession()).resolves.toBeUndefined();
   });
 });
