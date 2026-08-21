@@ -65,12 +65,9 @@ def test_mcp_constraint_resolves_to_an_importable_version(tmp_path: Path) -> Non
     venv.create(venv_dir, with_pip=False)
     venv_python = venv_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
-    # 60s, well under pytest.ini's global 120s test timeout: that global bound
-    # already stops a hung run, but its thread-based mechanism isn't guaranteed
-    # to terminate a subprocess blocked on I/O, so a genuinely stuck `uv` could
-    # outlive the test that reported timing out. An explicit timeout here kills
-    # the subprocess itself and fails with a clear, specific message before the
-    # blunter global one would fire.
+    # 60s here plus 30s on the import check below keeps both subprocesses inside
+    # pytest.ini's global 120s bound, so a stuck `uv` fails with a message naming
+    # the install it hung on rather than as a bare global timeout.
     install = subprocess.run(
         ["uv", "pip", "install", "--python", str(venv_python), str(requirement)],
         capture_output=True,
