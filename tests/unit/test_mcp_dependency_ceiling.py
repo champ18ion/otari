@@ -58,11 +58,15 @@ def test_mcp_constraint_has_an_upper_bound() -> None:
     )
 
 
+@pytest.mark.flaky(reruns=2, reruns_delay=5)
 def test_mcp_constraint_resolves_to_an_importable_version(tmp_path: Path) -> None:
     """Slow, behavioral half of the regression: actually resolve mcp fresh, ignoring
     uv.lock entirely, and prove the import that broke in #689 still works. A ceiling
     that's present but placed too high (e.g. "<3.0.0") would pass the static check
     above yet still break here.
+
+    Reruns cover a transient PyPI/index failure during the real install below, not
+    the assertions themselves.
     """
     if shutil.which("uv") is None:
         pytest.skip("uv is not on PATH")
