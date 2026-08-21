@@ -66,6 +66,7 @@ The per-request flow (auth → budget → dispatch → reconciliation) spans sev
   import that reached an OSS code path, and a single third-party import in it
   (httpx, pyyaml) gives that up.
 - Two tests assert the provider-error sanitization by making a real outbound call (`test_error_detail_leakage.py::test_provider_error_does_not_leak_details`, `test_streaming_error_event.py::test_streaming_creation_error_returns_http_error`). With no network egress the upstream fails differently and both report a status mismatch, so treat them as environment noise rather than a regression, and confirm a change against the rest of the suite.
+- `tests/integration/test_mcp_dependency_ceiling.py::test_mcp_constraint_resolves_to_an_importable_version` also needs network egress, to install `mcp` fresh from PyPI into a throwaway venv. Unlike the two above, a missing egress here does not look like a status mismatch: it fails hard after burning both `@pytest.mark.flaky` reruns. It also skips outright (not fails) when `uv` is not on `PATH`.
 
 ## Generated Artifacts
 - The Postman collection is generated **from** `docs/public/openapi.json`, so it goes stale

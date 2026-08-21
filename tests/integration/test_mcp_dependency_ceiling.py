@@ -56,8 +56,13 @@ def test_mcp_constraint_resolves_to_an_importable_version(tmp_path: Path) -> Non
 
     requirement = _mcp_requirement()
 
+    # with_pip=False: `uv pip install --python` does the installing, so the venv's
+    # own pip is never used, but bootstrapping it needs ensurepip, which some
+    # distro interpreters ship separately from the venv module (e.g. Debian's
+    # python3-venv without python3-pip). Skipping it keeps this failing only on
+    # what it's actually checking, not on an unrelated ensurepip gap.
     venv_dir = tmp_path / "venv"
-    venv.create(venv_dir, with_pip=True)
+    venv.create(venv_dir, with_pip=False)
     venv_python = venv_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
     install = subprocess.run(

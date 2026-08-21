@@ -1,18 +1,10 @@
-"""mcp's pyproject.toml constraint must keep mcp 2.0+ out of a fresh
-resolution, not just satisfy the committed uv.lock.
+"""Fast, static half of the mcp dependency-ceiling regression (see #689).
 
-This is the fast, static half of the regression: a floor with no ceiling
-("mcp>=1.28.1") is exactly the shape that let mcp 2.0 in undetected (mcp
-2.0 removed `mcp.client.streamable_http.streamablehttp_client`, which
-`gateway/services/mcp_client.py` imports at module scope, breaking every
-gateway command on import - see #689). This check catches that shape
-immediately, with a message pointing at #689, rather than only surfacing as
-an obscure failure elsewhere.
-
-It does not on its own prove a present ceiling is placed correctly (e.g.
-catches "<3.0.0" is not that): that behavioral proof is
-tests/integration/test_mcp_dependency_ceiling.py, which actually resolves
-mcp fresh, ignoring uv.lock, and checks the real import.
+Catches a floor with no ceiling at all ("mcp>=1.28.1"), immediately and by
+name, rather than as an obscure failure elsewhere. Does not on its own prove
+a present ceiling is placed correctly (e.g. "<3.0.0" passes this) - that's
+tests/integration/test_mcp_dependency_ceiling.py, which has the full story
+and does the real fresh-resolution proof.
 """
 
 from __future__ import annotations
