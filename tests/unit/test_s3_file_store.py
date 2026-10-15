@@ -304,6 +304,38 @@ async def test_put_stream_cleanup_survives_a_second_cancellation(
     assert listing.get("KeyCount", 0) == 0
 
 
+@pytest.mark.asyncio
+async def test_put_stream_logs_when_removing_the_orphan_fails(
+    s3_store: S3FileStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = s3_store._client  # noqa: SLF001 - need the raw client to patch upload_fileobj
+    original_upload_fileobj = client.upload_fileobj
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+
+    def _gated_upload_fileobj(fileobj: IO[bytes], bucket: str, key: str) -> None:
+        upload_started.set()
+        release_upload.wait(timeout=5)
+        original_upload_fileobj(fileobj, bucket, key)
+
+    def _boom(**kwargs: object) -> object:
+        raise _client_error("DeleteObject")
+
+    monkeypatch.setattr(client, "upload_fileobj", _gated_upload_fileobj)
+    monkeypatch.setattr(client, "delete_object", _boom)
+
+    ref = await s3_store.allocate("file-deletefail01")
+    task = asyncio.ensure_future(s3_store.put_stream(ref, _iter([b"data"])))
+    assert await asyncio.to_thread(upload_started.wait, 5), "upload thread never started"
+    task.cancel()
+    release_upload.set()
+
+    with caplog.at_level("WARNING"), pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "failed to remove orphaned upload" in caplog.text
+
+
 def test_missing_boto3_names_the_extra_to_install(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "boto3", None)
 
