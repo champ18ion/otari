@@ -197,18 +197,13 @@ def _translate_s3_errors(storage_ref: str) -> Iterator[None]:
         raise OSError(msg) from exc
 
 
-async def _settle(task: asyncio.Future[Any]) -> bool:
-    """Wait for ``task`` to finish however often this coroutine is cancelled.
-
-    Returns whether a cancellation arrived meanwhile, so the caller can restore it.
-    """
-    cancelled = False
+async def _settle(task: asyncio.Future[Any]) -> None:
+    """Wait for ``task`` to finish however often this coroutine is cancelled."""
     while not task.done():
         try:
             await asyncio.wait({task})
         except asyncio.CancelledError:
-            cancelled = True
-    return cancelled
+            pass
 
 
 class S3FileStore(FileStoragePort):
@@ -290,10 +285,9 @@ class S3FileStore(FileStoragePort):
                 # needed here.
                 with _translate_s3_errors(storage_ref):
                     await asyncio.shield(upload_task)
-            except BaseException as exc:
-                if upload_task is not None and await self._discard_orphaned_upload(upload_task, storage_ref):
-                    if not isinstance(exc, asyncio.CancelledError):
-                        raise asyncio.CancelledError from exc
+            except BaseException:
+                if upload_task is not None:
+                    await self._discard_orphaned_upload(upload_task, storage_ref)
                 raise
         finally:
             # Shielded like _open_handle: this runs during unwind on a
@@ -305,8 +299,8 @@ class S3FileStore(FileStoragePort):
                 logger.warning("put_stream: failed to close spool file for %s: %s", storage_ref, cleanup_exc)
         return total
 
-    async def _discard_orphaned_upload(self, upload_task: asyncio.Task[None], storage_ref: str) -> bool:
-        """Remove the object ``upload_task`` left behind; return whether a further cancel arrived.
+    async def _discard_orphaned_upload(self, upload_task: asyncio.Task[None], storage_ref: str) -> None:
+        """Remove the object ``upload_task`` left behind, if it finished uploading.
 
         Our await on the upload may have been cancelled while its thread was
         still running (shield keeps the task itself alive), so wait for it to
@@ -315,16 +309,15 @@ class S3FileStore(FileStoragePort):
         s3transfer already aborts its multipart upload. Both waits ride out
         repeated cancellation so the delete is never skipped.
         """
-        cancelled = await _settle(upload_task)
+        await _settle(upload_task)
         if upload_task.cancelled() or upload_task.exception() is not None:
-            return cancelled
+            return
         delete_task = asyncio.ensure_future(
             asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=storage_ref)
         )
-        cancelled = await _settle(delete_task) or cancelled
+        await _settle(delete_task)
         if delete_task.exception() is not None:
             logger.warning("put_stream: failed to remove orphaned upload %s: %s", storage_ref, delete_task.exception())
-        return cancelled
 
     async def get_stream(self, storage_ref: str) -> AsyncGenerator[bytes, None]:
         with _translate_s3_errors(storage_ref):
