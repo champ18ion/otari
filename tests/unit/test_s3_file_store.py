@@ -336,6 +336,68 @@ async def test_put_stream_logs_when_removing_the_orphan_fails(
     assert "failed to remove orphaned upload" in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_put_stream_cleanup_keeps_an_outer_timeout_intact(
+    s3_store: S3FileStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """asyncio.timeout() must still see its deadline: the cancel it sent is not swallowed by the cleanup."""
+    client = s3_store._client  # noqa: SLF001 - need the raw client to patch upload_fileobj
+    original_upload_fileobj = client.upload_fileobj
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+
+    def _gated_upload_fileobj(fileobj: IO[bytes], bucket: str, key: str) -> None:
+        upload_started.set()
+        release_upload.wait(timeout=5)
+        original_upload_fileobj(fileobj, bucket, key)
+
+    monkeypatch.setattr(client, "upload_fileobj", _gated_upload_fileobj)
+    ref = await s3_store.allocate("file-timeout01")
+
+    async def _release_after_deadline() -> None:
+        await asyncio.to_thread(upload_started.wait, 5)
+        await asyncio.sleep(0.3)
+        release_upload.set()
+
+    releaser = asyncio.ensure_future(_release_after_deadline())
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.1):
+            await s3_store.put_stream(ref, _iter([b"data"]))
+    await releaser
+
+    listing = await asyncio.to_thread(client.list_objects_v2, Bucket=_BUCKET, Prefix="ti/")
+    assert listing.get("KeyCount", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_put_stream_cleanup_gives_up_on_a_stuck_upload(
+    s3_store: S3FileStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A thread that never finishes must not keep a cancelled request alive forever."""
+    monkeypatch.setattr("gateway.adapters.file_storage_adapter._ORPHAN_CLEANUP_TIMEOUT_SECONDS", 0.2)
+    client = s3_store._client  # noqa: SLF001 - need the raw client to patch upload_fileobj
+    upload_started = threading.Event()
+    release_upload = threading.Event()
+
+    def _stuck_upload_fileobj(fileobj: IO[bytes], bucket: str, key: str) -> None:
+        upload_started.set()
+        release_upload.wait(timeout=5)
+
+    monkeypatch.setattr(client, "upload_fileobj", _stuck_upload_fileobj)
+    ref = await s3_store.allocate("file-stuck01")
+    task = asyncio.ensure_future(s3_store.put_stream(ref, _iter([b"data"])))
+    assert await asyncio.to_thread(upload_started.wait, 5), "upload thread never started"
+    task.cancel()
+
+    try:
+        with caplog.at_level("WARNING"), pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=3)
+    finally:
+        release_upload.set()
+
+    assert "gave up waiting for upload" in caplog.text
+
+
 def test_missing_boto3_names_the_extra_to_install(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "boto3", None)
 

@@ -33,6 +33,10 @@ _STREAM_CHUNK_BYTES = 1024 * 1024
 # is a per-upload budget, not a global one: N concurrent put_stream calls can
 # hold up to N * this many bytes in memory before any of them spill to disk.
 _SPOOL_MAX_MEMORY_BYTES = 10 * 1024 * 1024
+# How long put_stream's cleanup waits, for the in-flight upload and again for
+# the compensating delete, before giving up on a thread that stopped making
+# progress so the request is not left uncancellable.
+_ORPHAN_CLEANUP_TIMEOUT_SECONDS = 30.0
 
 
 def _shard_key(file_id: str) -> str:
@@ -197,13 +201,25 @@ def _translate_s3_errors(storage_ref: str) -> Iterator[None]:
         raise OSError(msg) from exc
 
 
-async def _settle(task: asyncio.Future[Any]) -> None:
-    """Wait for ``task`` to finish however often this coroutine is cancelled."""
+async def _settle(task: asyncio.Future[Any], timeout: float) -> bool:
+    """Wait up to ``timeout`` seconds for ``task``, through repeated cancellation; return whether it finished.
+
+    A cancel arriving meanwhile is not lost: the caller only waits while it is
+    already unwinding from a ``CancelledError``, and re-raises that one when it
+    is done, which is the one an outer ``asyncio.timeout()`` or ``TaskGroup``
+    is looking for.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
     while not task.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
         try:
-            await asyncio.wait({task})
+            await asyncio.wait({task}, timeout=remaining)
         except asyncio.CancelledError:
             pass
+    return True
 
 
 class S3FileStore(FileStoragePort):
@@ -307,16 +323,20 @@ class S3FileStore(FileStoragePort):
         settle. If it succeeded, the object landed in S3 with nothing that
         will ever reference it, so delete it. A failed upload needs nothing:
         s3transfer already aborts its multipart upload. Both waits ride out
-        repeated cancellation so the delete is never skipped.
+        repeated cancellation so the delete is never skipped, and both are
+        bounded so a stuck thread cannot make the request uncancellable.
         """
-        await _settle(upload_task)
+        if not await _settle(upload_task, _ORPHAN_CLEANUP_TIMEOUT_SECONDS):
+            logger.warning("put_stream: gave up waiting for upload %s; it may remain in the bucket", storage_ref)
+            return
         if upload_task.cancelled() or upload_task.exception() is not None:
             return
         delete_task = asyncio.ensure_future(
             asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=storage_ref)
         )
-        await _settle(delete_task)
-        if delete_task.exception() is not None:
+        if not await _settle(delete_task, _ORPHAN_CLEANUP_TIMEOUT_SECONDS):
+            logger.warning("put_stream: gave up removing orphaned upload %s", storage_ref)
+        elif delete_task.exception() is not None:
             logger.warning("put_stream: failed to remove orphaned upload %s: %s", storage_ref, delete_task.exception())
 
     async def get_stream(self, storage_ref: str) -> AsyncGenerator[bytes, None]:
