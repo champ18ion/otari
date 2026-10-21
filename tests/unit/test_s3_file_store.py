@@ -269,6 +269,27 @@ async def test_get_stream_read_failure_raises_oserror(s3_store: S3FileStore, mon
 
 
 @pytest.mark.asyncio
+async def test_get_stream_tls_failure_raises_oserror(s3_store: S3FileStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """botocore's StreamingBody.read lets urllib3's SSLError through unconverted."""
+    from urllib3.exceptions import SSLError
+
+    ref = await s3_store.allocate("file-tlsfail01")
+    await s3_store.put(ref, b"data")
+
+    class _BrokenBody:
+        def read(self, amt: int | None = None) -> bytes:
+            raise SSLError("bad record mac")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(s3_store._client, "get_object", lambda **kw: {"Body": _BrokenBody()})  # noqa: SLF001
+    with pytest.raises(OSError):  # noqa: PT011 - translated urllib3 error, message not asserted
+        async for _ in s3_store.get_stream(ref):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_put_stream_cleanup_survives_a_second_cancellation(
     s3_store: S3FileStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

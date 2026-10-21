@@ -186,6 +186,7 @@ def _translate_s3_errors(storage_ref: str) -> Iterator[None]:
     """
     from boto3.exceptions import S3UploadFailedError
     from botocore.exceptions import BotoCoreError, ClientError
+    from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
     try:
         yield
@@ -195,8 +196,9 @@ def _translate_s3_errors(storage_ref: str) -> Iterator[None]:
             raise FileNotFoundError(storage_ref) from exc
         msg = f"S3 operation failed for {storage_ref!r}: {exc}"
         raise OSError(msg) from exc
-    except (BotoCoreError, S3UploadFailedError) as exc:
-        # S3UploadFailedError (from upload_fileobj) is neither a ClientError nor a BotoCoreError.
+    except (BotoCoreError, S3UploadFailedError, Urllib3HTTPError) as exc:
+        # S3UploadFailedError (from upload_fileobj) is neither a ClientError nor a BotoCoreError, and
+        # StreamingBody.read converts only urllib3's timeout and protocol errors, so e.g. an SSLError escapes raw.
         msg = f"S3 operation failed for {storage_ref!r}: {exc}"
         raise OSError(msg) from exc
 
